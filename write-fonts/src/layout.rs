@@ -328,6 +328,77 @@ impl CoverageTableBuilder {
     }
 }
 
+//// represent the format choice as a type. this would let us provide API
+//// such that the user could manually decide which format to use, if wished
+//pub struct ClassDefFormat1Writer<'a>(&'a ClassDefBuilder);
+
+//pub struct ClassDefFormat2Writer<'a>(&'a ClassDefBuilder);
+//pub struct CoverageTableFormat1Writer<'a>(&'a CoverageTableBuilder);
+
+//pub struct CoverageTableFormat2Writer<'a>(&'a CoverageTableBuilder);
+
+//impl FontWrite for ClassDefFormat1Writer<'_> {
+//fn write_into(&self, writer: &mut TableWriter) {
+//1u16.write_into(writer);
+//(*self.0.items.keys().next().expect("no empty classdefs")).write_into(writer);
+//(self.0.items.len() as u16).write_into(writer);
+//self.0.items.values().for_each(|val| val.write_into(writer));
+//}
+//}
+
+//impl FontWrite for ClassDefFormat2Writer<'_> {
+//fn write_into(&self, writer: &mut TableWriter) {
+//2u16.write_into(writer);
+//(iter_class_ranges(&self.0.items).count() as u16).write_into(writer);
+//iter_class_ranges(&self.0.items).for_each(|obj| {
+//obj.start_glyph_id.write_into(writer);
+//obj.end_glyph_id.write_into(writer);
+//obj.class.write_into(writer);
+//})
+//}
+//}
+
+//impl FontWrite for ClassDefBuilder {
+//fn write_into(&self, writer: &mut TableWriter) {
+//if self.is_contiguous() {
+//ClassDefFormat1Writer(self).write_into(writer)
+//} else {
+//ClassDefFormat2Writer(self).write_into(writer)
+//}
+//}
+//}
+
+//impl FontWrite for CoverageTableBuilder {
+//fn write_into(&self, writer: &mut TableWriter) {
+//if should_choose_coverage_format_2(&self.glyphs) {
+//CoverageTableFormat2Writer(self).write_into(writer);
+//} else {
+//CoverageTableFormat1Writer(self).write_into(writer);
+//}
+//}
+//}
+
+//impl FontWrite for CoverageTableFormat1Writer<'_> {
+//fn write_into(&self, writer: &mut TableWriter) {
+//1u16.write_into(writer);
+//(self.0.glyphs.len() as u16).write_into(writer);
+//self.0.glyphs.as_slice().write_into(writer);
+//}
+//}
+
+//impl FontWrite for CoverageTableFormat2Writer<'_> {
+//fn write_into(&self, writer: &mut TableWriter) {
+//2u16.write_into(writer);
+//let count = RangeRecord::iter_for_glyphs(&self.0.glyphs).count() as u16;
+//count.write_into(writer);
+//for range in RangeRecord::iter_for_glyphs(&self.0.glyphs) {
+//range.start_glyph_id.write_into(writer);
+//range.end_glyph_id.write_into(writer);
+//range.start_coverage_index.write_into(writer);
+//}
+//}
+//}
+
 impl FromIterator<(GlyphId, u16)> for ClassDefBuilder {
     fn from_iter<T: IntoIterator<Item = (GlyphId, u16)>>(iter: T) -> Self {
         Self {
