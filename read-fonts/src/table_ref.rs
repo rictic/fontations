@@ -56,7 +56,8 @@ impl<'a, T> TableRef<'a, T> {
 impl<'a, T: Copy> TableRef<'a, T> {
     // used to get around the borrow checker when dealing with things like
     // arrays of that we want to iterate
-    pub(crate) fn sneaky_copy(&self) -> Self {
+    #[doc(hidden)]
+    pub fn sneaky_copy(&self) -> Self {
         Self {
             data: self.data,
             shape: self.shape,

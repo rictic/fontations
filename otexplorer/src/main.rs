@@ -5,8 +5,12 @@
 
 use std::{collections::HashSet, str::FromStr};
 
-use font_types::Tag;
-use read_fonts::{traversal::SomeTable, FontData, FontRef, ReadError, TableProvider};
+use font_types::{GlyphId, Offset32, Tag};
+use read_fonts::{
+    tables::{glyf::Glyf, loca::Loca},
+    traversal::{Field, FieldType, SomeArray, SomeTable},
+    FontData, FontRef, ReadError, TableProvider,
+};
 
 mod print;
 mod query;
@@ -88,6 +92,7 @@ fn get_some_table<'a>(
     tag: Tag,
 ) -> Result<Box<dyn SomeTable<'a> + 'a>, ReadError> {
     match tag {
+        //<<<<<<< Updated upstream:otexplorer/src/main.rs
         read_fonts::tables::gpos::TAG => font.gpos().map(|x| Box::new(x) as _),
         read_fonts::tables::cmap::TAG => font.cmap().map(|x| Box::new(x) as _),
         read_fonts::tables::gdef::TAG => font.gdef().map(|x| Box::new(x) as _),
@@ -104,9 +109,74 @@ fn get_some_table<'a>(
 }
 
 fn print_table(font: &FontRef, tag: Tag) {
+    if tag == read_fonts::tables::glyf::TAG {
+        return print_glyf(font);
+    }
+
     match get_some_table(font, tag) {
         Ok(table) => fancy_print_table(&table).unwrap(),
         Err(err) => println!("{tag}: Error '{err}'"),
+    }
+}
+
+// this needs special handling because it is useless without loca.
+fn print_glyf(font: &FontRef) {
+    let loca = match font.loca(None) {
+        Ok(loca) => loca,
+        Err(_) => {
+            eprintln!("Can't print glyf, missing loca");
+            return;
+        }
+    };
+    let glyf = font.glyf().unwrap();
+    println!("glyf: {:#?}", GlyfPrinter { loca, glyf });
+}
+
+struct GlyfPrinter<'a> {
+    loca: Loca<'a>,
+    glyf: Glyf<'a>,
+}
+
+impl<'a> SomeTable<'a> for GlyfPrinter<'a> {
+    fn type_name(&self) -> &str {
+        "glyf"
+    }
+
+    fn get_field(&self, idx: usize) -> Option<read_fonts::traversal::Field<'a>> {
+        match idx {
+            0 => {
+                let loca = self.loca.clone();
+                let glyf = self.glyf.sneaky_copy();
+                Some(Field::new(
+                    "glyphs",
+                    FieldType::Array(Box::new(GlyfPrinter { loca, glyf })),
+                ))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl<'a> SomeArray<'a> for GlyfPrinter<'a> {
+    fn type_name(&self) -> &str {
+        "glyphs"
+    }
+
+    fn len(&self) -> usize {
+        self.loca.len()
+    }
+
+    fn get(&self, idx: usize) -> Option<FieldType<'a>> {
+        let gid = GlyphId::new(idx.try_into().unwrap_or_default());
+        let offset = Offset32::new(idx.try_into().unwrap_or_default());
+        let glyph = self.loca.get_glyf(gid, &self.glyf);
+        Some(FieldType::offset(offset, glyph))
+    }
+}
+
+impl<'a> std::fmt::Debug for GlyfPrinter<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (self as &dyn SomeTable<'a>).fmt(f)
     }
 }
 
