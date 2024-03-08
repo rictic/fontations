@@ -1,5 +1,7 @@
 //! Support for applying embedded hinting instructions.
 
+use raw::tables::glyf::OffCurveFirstMode;
+
 use super::{
     cff, AdjustedMetrics, DrawError, Hinting, LocationRef, NormalizedCoord, OutlineCollectionKind,
     OutlineGlyph, OutlineGlyphCollection, OutlineKind, OutlinePen, Size,
@@ -157,6 +159,7 @@ impl EmbeddedHintingInstance {
         &self,
         glyph: &OutlineGlyph,
         memory: Option<&mut [u8]>,
+        off_curve_first_mode: OffCurveFirstMode,
         pen: &mut impl OutlinePen,
     ) -> Result<AdjustedMetrics, DrawError> {
         let ppem = self.size.ppem();
@@ -168,7 +171,7 @@ impl EmbeddedHintingInstance {
                         .memory_from_buffer(buf, Hinting::Embedded)
                         .ok_or(DrawError::InsufficientMemory)?;
                     let scaled_outline = glyf.draw(mem, outline, ppem, coords)?;
-                    scaled_outline.to_path(pen)?;
+                    scaled_outline.to_path(off_curve_first_mode, pen)?;
                     Ok(AdjustedMetrics {
                         has_overlaps: outline.has_overlaps,
                         lsb: Some(scaled_outline.adjusted_lsb().to_f32()),

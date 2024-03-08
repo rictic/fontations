@@ -82,6 +82,10 @@ impl PointFlags {
         self.0 & Self::OFF_CURVE_CUBIC != 0
     }
 
+    pub fn is_off_curve(self) -> bool {
+        self.is_off_curve_quad() || self.is_off_curve_cubic()
+    }
+
     /// Flips the state of the on curve flag.
     ///
     /// This is used for the TrueType `FLIPPT` instruction.
@@ -678,6 +682,13 @@ impl fmt::Display for ToPathError {
     }
 }
 
+#[derive(Debug, Default, Copy, Clone)]
+pub enum OffCurveFirstMode {
+    #[default]
+    Back,
+    Front,
+}
+
 #[derive(Debug, Copy, Clone)]
 enum OnCurve {
     Implicit,
@@ -711,6 +722,7 @@ struct Contour<'a> {
     points: &'a [Point<F26Dot6>],
     /// The flags for points, sliced from a glyphs flag stream
     flags: &'a [PointFlags],
+    offcurve_first_mode: OffCurveFirstMode,
 }
 
 #[derive(Debug)]
@@ -741,7 +753,10 @@ impl<'a> ContourIter<'a> {
             // Establish our first move and the starting index for our waltz over the points
             first_move = contour.points[0];
             if contour.flags[0].is_off_curve_quad() {
-                let maybe_oncurve_ix = contour.points.len() - 1;
+                let maybe_oncurve_ix = match contour.offcurve_first_mode {
+                    OffCurveFirstMode::Back => contour.points.len() - 1,
+                    OffCurveFirstMode::Front => (start_ix + 1).min(contour.points.len() - 1),
+                };
                 if contour.flags[maybe_oncurve_ix].is_on_curve() {
                     start_ix = maybe_oncurve_ix + 1;
                     first_move = contour.points[maybe_oncurve_ix];
@@ -749,7 +764,10 @@ impl<'a> ContourIter<'a> {
                 } else {
                     // where we looked for an on-curve was also off. Take the implicit oncurve in between as first move.
                     first_move = midpoint(contour.points[0], contour.points[maybe_oncurve_ix]);
-                    start_ix = 0;
+                    start_ix = match contour.offcurve_first_mode {
+                        OffCurveFirstMode::Back => 0,
+                        OffCurveFirstMode::Front => 1,
+                    };
                 }
             } else {
                 start_ix = 1;
@@ -884,6 +902,7 @@ impl<'a> Contour<'a> {
         base_offset: usize,
         points: &'a [Point<F26Dot6>],
         flags: &'a [PointFlags],
+        offcurve_first_mode: OffCurveFirstMode,
     ) -> Result<Self, ToPathError> {
         if points.len() != flags.len() {
             return Err(ToPathError::PointFlagMismatch {
@@ -895,6 +914,7 @@ impl<'a> Contour<'a> {
             base_offset,
             points,
             flags,
+            offcurve_first_mode,
         })
     }
 
@@ -929,6 +949,7 @@ pub fn to_path(
     points: &[Point<F26Dot6>],
     flags: &[PointFlags],
     contours: &[u16],
+    offcurve_first_mode: OffCurveFirstMode,
     pen: &mut impl Pen,
 ) -> Result<(), ToPathError> {
     for contour_ix in 0..contours.len() {
@@ -943,6 +964,7 @@ pub fn to_path(
             start_ix,
             &points[start_ix..=end_ix],
             &flags[start_ix..=end_ix],
+            offcurve_first_mode,
         )?
         .draw(pen)?;
     }
@@ -1008,8 +1030,7 @@ mod tests {
 
     use crate::{FontRef, GlyphId, TableProvider};
 
-    #[test]
-    fn all_off_curve_to_path() {
+    fn assert_all_off_curve_path_to_svg(expected: &str, offcurve_first_mode: OffCurveFirstMode) {
         fn pt(x: i32, y: i32) -> Point<F26Dot6> {
             Point::new(x, y).map(F26Dot6::from_bits)
         }
@@ -1021,8 +1042,6 @@ mod tests {
         // For this test case (in 26.6 fixed point): [(640, 128) + (128, 128)] / 2 = (384, 128)
         // which becomes (6.0, 2.0) when converted to floating point.
         let points = [pt(640, 128), pt(256, 64), pt(640, 64), pt(128, 128)];
-        let expected =
-            "M6.0,2.0 Q10.0,2.0 7.0,1.5 Q4.0,1.0 7.0,1.0 Q10.0,1.0 6.0,1.5 Q2.0,2.0 6.0,2.0 z";
         struct SvgPen(String);
         impl Pen for SvgPen {
             fn move_to(&mut self, x: f32, y: f32) {
@@ -1045,9 +1064,27 @@ mod tests {
             }
         }
         let mut pen = SvgPen(String::default());
-        to_path(&points, &flags, &contours, &mut pen).unwrap();
+        to_path(&points, &flags, &contours, offcurve_first_mode, &mut pen).unwrap();
         assert_eq!(pen.0.trim(), expected);
     }
+
+    #[test]
+    fn all_off_curve_to_path_offcurve_scan_backward() {
+        assert_all_off_curve_path_to_svg(
+            "M6.0,2.0 Q10.0,2.0 7.0,1.5 Q4.0,1.0 7.0,1.0 Q10.0,1.0 6.0,1.5 Q2.0,2.0 6.0,2.0 z",
+            OffCurveFirstMode::Back,
+        );
+    }
+
+    #[test]
+    fn all_off_curve_to_path_offcurve_scan_forward() {
+        assert_all_off_curve_path_to_svg(
+            "M7.0,1.5 Q4.0,1.0 7.0,1.0 Q10.0,1.0 6.0,1.5 Q2.0,2.0 6.0,2.0 Q10.0,2.0 7.0,1.5 z",
+            OffCurveFirstMode::Front,
+        );
+    }
+
+    // TODO: test with 0, 1, 2 points of mixed nature
 
     #[test]
     fn simple_glyph() {
@@ -1217,4 +1254,16 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn to_path_drops_nop_lineto() {}
+
+    #[test]
+    fn to_path_empty() {}
+
+    #[test]
+    fn to_path_one_point() {}
+
+    #[test]
+    fn to_path_two_points() {}
 }

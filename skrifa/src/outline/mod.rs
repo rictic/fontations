@@ -84,6 +84,7 @@ mod glyf;
 
 pub mod error;
 
+use raw::tables::glyf::OffCurveFirstMode;
 use read_fonts::{types::GlyphId, TableProvider};
 
 pub use embedded_hinting::{EmbeddedHintingInstance, HintingMode, LcdLayout};
@@ -151,6 +152,7 @@ pub struct AdjustedMetrics {
 pub struct DrawSettings<'a> {
     instance: DrawInstance<'a>,
     memory: Option<&'a mut [u8]>,
+    off_curve_first_mode: OffCurveFirstMode,
 }
 
 impl<'a> DrawSettings<'a> {
@@ -160,6 +162,7 @@ impl<'a> DrawSettings<'a> {
         Self {
             instance: DrawInstance::Unhinted(size, location.into()),
             memory: None,
+            off_curve_first_mode: OffCurveFirstMode::default(),
         }
     }
 
@@ -171,6 +174,7 @@ impl<'a> DrawSettings<'a> {
         Self {
             instance: DrawInstance::EmbeddedHinted(instance),
             memory: None,
+            off_curve_first_mode: OffCurveFirstMode::default(),
         }
     }
 
@@ -183,6 +187,11 @@ impl<'a> DrawSettings<'a> {
     /// If not provided, any necessary memory will be allocated internally.
     pub fn with_memory(mut self, memory: Option<&'a mut [u8]>) -> Self {
         self.memory = memory;
+        self
+    }
+
+    pub fn with_offcurve_first_mode(mut self, off_curve_first_mode: OffCurveFirstMode) -> Self {
+        self.off_curve_first_mode = off_curve_first_mode;
         self
     }
 }
@@ -294,10 +303,16 @@ impl<'a> OutlineGlyph<'a> {
     ) -> Result<AdjustedMetrics, DrawError> {
         let settings = settings.into();
         match settings.instance {
-            DrawInstance::Unhinted(size, location) => {
-                self.draw_unhinted(size, location, settings.memory, pen)
+            DrawInstance::Unhinted(size, location) => self.draw_unhinted(
+                size,
+                location,
+                settings.memory,
+                settings.off_curve_first_mode,
+                pen,
+            ),
+            DrawInstance::EmbeddedHinted(hinter) => {
+                hinter.draw(self, settings.memory, settings.off_curve_first_mode, pen)
             }
-            DrawInstance::EmbeddedHinted(hinter) => hinter.draw(self, settings.memory, pen),
         }
     }
 
@@ -306,6 +321,7 @@ impl<'a> OutlineGlyph<'a> {
         size: Size,
         location: impl Into<LocationRef<'a>>,
         memory: Option<&mut [u8]>,
+        off_curve_first_mode: OffCurveFirstMode,
         pen: &mut impl OutlinePen,
     ) -> Result<AdjustedMetrics, DrawError> {
         let ppem = size.ppem();
@@ -317,7 +333,7 @@ impl<'a> OutlineGlyph<'a> {
                         .memory_from_buffer(buf, Hinting::None)
                         .ok_or(DrawError::InsufficientMemory)?;
                     let scaled_outline = glyf.draw(mem, outline, ppem, coords)?;
-                    scaled_outline.to_path(pen)?;
+                    scaled_outline.to_path(off_curve_first_mode, pen)?;
                     Ok(AdjustedMetrics {
                         has_overlaps: outline.has_overlaps,
                         lsb: Some(scaled_outline.adjusted_lsb().to_f32()),
@@ -351,13 +367,10 @@ impl<'a> OutlineGlyphCollection<'a> {
     /// Creates a new outline collection for the given font.
     pub fn new(font: &impl TableProvider<'a>) -> Self {
         let kind = if let Some(glyf) = glyf::Outlines::new(font) {
-            eprintln!("glyf!");
             OutlineCollectionKind::Glyf(glyf)
         } else if let Ok(cff) = cff::Outlines::new(font) {
-            eprintln!("cff!");
             OutlineCollectionKind::Cff(cff)
         } else {
-            eprintln!("none!");
             OutlineCollectionKind::None
         };
         Self { kind }
@@ -471,6 +484,8 @@ mod tests {
     use crate::MetadataProvider;
     use read_fonts::{scaler_test, types::GlyphId, FontRef, TableProvider};
 
+    use pretty_assertions::assert_eq;
+
     #[test]
     fn outline_glyph_formats() {
         let font_format_pairs = [
@@ -557,29 +572,20 @@ mod tests {
                     &mut path,
                 )
                 .unwrap();
-            if path.elements != expected_outline.path {
-                panic!(
-                    "mismatch in glyph path for id {} (size: {}, coords: {:?}): path: {:?} expected_path: {:?}",
+            assert_eq!(path.elements, expected_outline.path, "mismatch in glyph path for id {} (size: {}, coords: {:?}): path: {:?} expected_path: {:?}",
                     expected_outline.glyph_id,
                     expected_outline.size,
                     expected_outline.coords,
                     &path.elements,
                     &expected_outline.path
                 );
-            }
         }
     }
 
     #[derive(Copy, Clone, Debug, PartialEq)]
     enum GlyphPoint {
-        On {
-            x: f32,
-            y: f32,
-        },
-        Off {
-            x: f32,
-            y: f32,
-        },
+        On { x: f32, y: f32 },
+        Off { x: f32, y: f32 },
     }
 
     #[derive(Debug)]
@@ -589,9 +595,18 @@ mod tests {
 
     impl PointCaptor {
         fn new() -> Self {
-            Self {
-                points: Vec::new(),
+            Self { points: Vec::new() }
+        }
+
+        fn into_points(mut self) -> Vec<GlyphPoint> {
+            // if we start and end with the same on-curve we can drop the end
+            if self.points.len() > 1
+                && matches!(self.points.first(), Some(GlyphPoint::On { .. }))
+                && self.points.first() == self.points.last()
+            {
+                self.points.pop();
             }
+            self.points
         }
     }
 
@@ -599,28 +614,28 @@ mod tests {
         fn move_to(&mut self, x: f32, y: f32) {
             self.points.push(GlyphPoint::On { x, y });
         }
-    
+
         fn line_to(&mut self, x: f32, y: f32) {
             self.points.push(GlyphPoint::On { x, y });
         }
-    
+
         fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
             self.points.push(GlyphPoint::Off { x: cx0, y: cy0 });
             self.points.push(GlyphPoint::On { x, y });
         }
-    
+
         fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
             self.points.push(GlyphPoint::Off { x: cx0, y: cy0 });
             self.points.push(GlyphPoint::Off { x: cx1, y: cy1 });
             self.points.push(GlyphPoint::On { x, y });
         }
-    
+
         fn close(&mut self) {
-            // nop
+            // nop, it's implied
         }
     }
 
-    const STARTING_OFF_CURVE_POINTS :[GlyphPoint; 4] = [
+    const STARTING_OFF_CURVE_POINTS: [GlyphPoint; 4] = [
         GlyphPoint::Off { x: 278.0, y: 710.0 },
         GlyphPoint::On { x: 278.0, y: 470.0 },
         GlyphPoint::On { x: 998.0, y: 470.0 },
@@ -631,13 +646,22 @@ mod tests {
         let font = FontRef::new(font_test_data::STARTING_OFF_CURVE).unwrap();
 
         // the period starts off-curve
-        let gid = font.cmap().unwrap().map_codepoint(0x2E_u32).expect("No gid for period");
+        let gid = font
+            .cmap()
+            .unwrap()
+            .map_codepoint(0x2E_u32)
+            .expect("No gid for period");
         let outlines = font.outline_glyphs();
-        let outline = outlines.get(gid).unwrap_or_else(|| panic!("No outline for {gid:?} in collection of {:?}", outlines.format()));
+        let outline = outlines.get(gid).unwrap_or_else(|| {
+            panic!(
+                "No outline for {gid:?} in collection of {:?}",
+                outlines.format()
+            )
+        });
 
         let mut pen = PointCaptor::new();
         outline.draw(settings, &mut pen).unwrap();
-        pen.points
+        pen.into_points()
     }
 
     #[test]
@@ -647,7 +671,10 @@ mod tests {
         let last = expected_points.pop().unwrap();
         expected_points.insert(0, last);
 
-        assert_eq!(expected_points, draw_starting_off_curve(Size::unscaled().into()));
+        assert_eq!(
+            expected_points,
+            draw_starting_off_curve(Size::unscaled().into())
+        );
     }
 
     #[test]
@@ -657,6 +684,8 @@ mod tests {
         let front = expected_points.remove(0);
         expected_points.push(front);
 
-        assert_eq!(expected_points, draw_starting_off_curve(Size::unscaled().into()));
+        let settings: DrawSettings = Size::unscaled().into();
+        let settings = settings.with_offcurve_first_mode(OffCurveFirstMode::Front);
+        assert_eq!(expected_points, draw_starting_off_curve(settings));
     }
 }

@@ -2,6 +2,7 @@
 
 use std::mem::size_of;
 
+use raw::tables::glyf::OffCurveFirstMode;
 use read_fonts::{
     tables::glyf::{to_path, Glyph, PointFlags, ToPathError},
     types::{F26Dot6, Fixed, GlyphId, Pen, Point},
@@ -122,7 +123,17 @@ impl<'a> ScaledOutline<'a> {
         self.phantom_points[1].x - self.phantom_points[0].x
     }
 
-    pub fn to_path(&self, pen: &mut impl Pen) -> Result<(), ToPathError> {
-        to_path(self.points, self.flags, self.contours, pen)
+    pub fn to_path(
+        &self,
+        off_curve_first_mode: OffCurveFirstMode,
+        pen: &mut impl Pen,
+    ) -> Result<(), ToPathError> {
+        to_path(
+            self.points,
+            self.flags,
+            self.contours,
+            off_curve_first_mode,
+            pen,
+        )
     }
 }
