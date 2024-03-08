@@ -351,10 +351,13 @@ impl<'a> OutlineGlyphCollection<'a> {
     /// Creates a new outline collection for the given font.
     pub fn new(font: &impl TableProvider<'a>) -> Self {
         let kind = if let Some(glyf) = glyf::Outlines::new(font) {
+            eprintln!("glyf!");
             OutlineCollectionKind::Glyf(glyf)
         } else if let Ok(cff) = cff::Outlines::new(font) {
+            eprintln!("cff!");
             OutlineCollectionKind::Cff(cff)
         } else {
+            eprintln!("none!");
             OutlineCollectionKind::None
         };
         Self { kind }
@@ -565,5 +568,95 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[derive(Copy, Clone, Debug, PartialEq)]
+    enum GlyphPoint {
+        On {
+            x: f32,
+            y: f32,
+        },
+        Off {
+            x: f32,
+            y: f32,
+        },
+    }
+
+    #[derive(Debug)]
+    struct PointCaptor {
+        points: Vec<GlyphPoint>,
+    }
+
+    impl PointCaptor {
+        fn new() -> Self {
+            Self {
+                points: Vec::new(),
+            }
+        }
+    }
+
+    impl OutlinePen for PointCaptor {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.points.push(GlyphPoint::On { x, y });
+        }
+    
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.points.push(GlyphPoint::On { x, y });
+        }
+    
+        fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
+            self.points.push(GlyphPoint::Off { x: cx0, y: cy0 });
+            self.points.push(GlyphPoint::On { x, y });
+        }
+    
+        fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
+            self.points.push(GlyphPoint::Off { x: cx0, y: cy0 });
+            self.points.push(GlyphPoint::Off { x: cx1, y: cy1 });
+            self.points.push(GlyphPoint::On { x, y });
+        }
+    
+        fn close(&mut self) {
+            // nop
+        }
+    }
+
+    const STARTING_OFF_CURVE_POINTS :[GlyphPoint; 4] = [
+        GlyphPoint::Off { x: 278.0, y: 710.0 },
+        GlyphPoint::On { x: 278.0, y: 470.0 },
+        GlyphPoint::On { x: 998.0, y: 470.0 },
+        GlyphPoint::On { x: 998.0, y: 710.0 },
+    ];
+
+    fn draw_starting_off_curve(settings: DrawSettings) -> Vec<GlyphPoint> {
+        let font = FontRef::new(font_test_data::STARTING_OFF_CURVE).unwrap();
+
+        // the period starts off-curve
+        let gid = font.cmap().unwrap().map_codepoint(0x2E_u32).expect("No gid for period");
+        let outlines = font.outline_glyphs();
+        let outline = outlines.get(gid).unwrap_or_else(|| panic!("No outline for {gid:?} in collection of {:?}", outlines.format()));
+
+        let mut pen = PointCaptor::new();
+        outline.draw(settings, &mut pen).unwrap();
+        pen.points
+    }
+
+    #[test]
+    fn starting_off_curve_walk_backwards_like_freetype() {
+        // The default: find an oncurve at the back, as freetype would do
+        let mut expected_points = STARTING_OFF_CURVE_POINTS.to_vec();
+        let last = expected_points.pop().unwrap();
+        expected_points.insert(0, last);
+
+        assert_eq!(expected_points, draw_starting_off_curve(Size::unscaled().into()));
+    }
+
+    #[test]
+    fn starting_off_curve_walk_forwards_like_hbdraw() {
+        // The default: find an oncurve at the back, as freetype would do
+        let mut expected_points = STARTING_OFF_CURVE_POINTS.to_vec();
+        let front = expected_points.remove(0);
+        expected_points.push(front);
+
+        assert_eq!(expected_points, draw_starting_off_curve(Size::unscaled().into()));
     }
 }
