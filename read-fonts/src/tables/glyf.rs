@@ -682,11 +682,17 @@ impl fmt::Display for ToPathError {
     }
 }
 
+/// The order to process points in a glyf point stream is ambiguous when the first point is
+/// off-curve. Major implementations differ. Which one would you like to match?
 #[derive(Debug, Default, Copy, Clone)]
-pub enum OffCurveFirstMode {
+pub enum ToPathStyle {
+    /// If the first point is off-curve, check if the last is on-curve
+    /// If it is, start there. If it isn't, start at the implied midpoint between first and last.
     #[default]
-    Back,
-    Front,
+    FreeType,
+    /// If the first point is off-curve, check if the second is on-curve.
+    /// If it is, start there. If it isn't, start at the implied midpoint between first and second.
+    HbDraw,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -722,7 +728,7 @@ struct Contour<'a> {
     points: &'a [Point<F26Dot6>],
     /// The flags for points, sliced from a glyphs flag stream
     flags: &'a [PointFlags],
-    offcurve_first_mode: OffCurveFirstMode,
+    offcurve_first_mode: ToPathStyle,
 }
 
 #[derive(Debug)]
@@ -754,8 +760,8 @@ impl<'a> ContourIter<'a> {
             first_move = contour.points[0];
             if contour.flags[0].is_off_curve_quad() {
                 let maybe_oncurve_ix = match contour.offcurve_first_mode {
-                    OffCurveFirstMode::Back => contour.points.len() - 1,
-                    OffCurveFirstMode::Front => (start_ix + 1).min(contour.points.len() - 1),
+                    ToPathStyle::FreeType => contour.points.len() - 1,
+                    ToPathStyle::HbDraw => (start_ix + 1).min(contour.points.len() - 1),
                 };
                 if contour.flags[maybe_oncurve_ix].is_on_curve() {
                     start_ix = maybe_oncurve_ix + 1;
@@ -765,8 +771,8 @@ impl<'a> ContourIter<'a> {
                     // where we looked for an on-curve was also off. Take the implicit oncurve in between as first move.
                     first_move = midpoint(contour.points[0], contour.points[maybe_oncurve_ix]);
                     start_ix = match contour.offcurve_first_mode {
-                        OffCurveFirstMode::Back => 0,
-                        OffCurveFirstMode::Front => 1,
+                        ToPathStyle::FreeType => 0,
+                        ToPathStyle::HbDraw => 1,
                     };
                 }
             } else {
@@ -902,7 +908,7 @@ impl<'a> Contour<'a> {
         base_offset: usize,
         points: &'a [Point<F26Dot6>],
         flags: &'a [PointFlags],
-        offcurve_first_mode: OffCurveFirstMode,
+        offcurve_first_mode: ToPathStyle,
     ) -> Result<Self, ToPathError> {
         if points.len() != flags.len() {
             return Err(ToPathError::PointFlagMismatch {
@@ -949,7 +955,7 @@ pub fn to_path(
     points: &[Point<F26Dot6>],
     flags: &[PointFlags],
     contours: &[u16],
-    offcurve_first_mode: OffCurveFirstMode,
+    offcurve_first_mode: ToPathStyle,
     pen: &mut impl Pen,
 ) -> Result<(), ToPathError> {
     for contour_ix in 0..contours.len() {
@@ -1030,7 +1036,7 @@ mod tests {
 
     use crate::{FontRef, GlyphId, TableProvider};
 
-    fn assert_all_off_curve_path_to_svg(expected: &str, offcurve_first_mode: OffCurveFirstMode) {
+    fn assert_all_off_curve_path_to_svg(expected: &str, offcurve_first_mode: ToPathStyle) {
         fn pt(x: i32, y: i32) -> Point<F26Dot6> {
             Point::new(x, y).map(F26Dot6::from_bits)
         }
@@ -1072,7 +1078,7 @@ mod tests {
     fn all_off_curve_to_path_offcurve_scan_backward() {
         assert_all_off_curve_path_to_svg(
             "M6.0,2.0 Q10.0,2.0 7.0,1.5 Q4.0,1.0 7.0,1.0 Q10.0,1.0 6.0,1.5 Q2.0,2.0 6.0,2.0 z",
-            OffCurveFirstMode::Back,
+            ToPathStyle::FreeType,
         );
     }
 
@@ -1080,7 +1086,7 @@ mod tests {
     fn all_off_curve_to_path_offcurve_scan_forward() {
         assert_all_off_curve_path_to_svg(
             "M7.0,1.5 Q4.0,1.0 7.0,1.0 Q10.0,1.0 6.0,1.5 Q2.0,2.0 6.0,2.0 Q10.0,2.0 7.0,1.5 z",
-            OffCurveFirstMode::Front,
+            ToPathStyle::HbDraw,
         );
     }
 

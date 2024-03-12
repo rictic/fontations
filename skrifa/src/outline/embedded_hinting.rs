@@ -1,6 +1,6 @@
 //! Support for applying embedded hinting instructions.
 
-use raw::tables::glyf::OffCurveFirstMode;
+use raw::tables::glyf::ToPathStyle;
 
 use super::{
     cff, AdjustedMetrics, DrawError, Hinting, LocationRef, NormalizedCoord, OutlineCollectionKind,
@@ -159,7 +159,7 @@ impl EmbeddedHintingInstance {
         &self,
         glyph: &OutlineGlyph,
         memory: Option<&mut [u8]>,
-        off_curve_first_mode: OffCurveFirstMode,
+        off_curve_first_mode: ToPathStyle,
         pen: &mut impl OutlinePen,
     ) -> Result<AdjustedMetrics, DrawError> {
         let ppem = self.size.ppem();

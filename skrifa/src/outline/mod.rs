@@ -84,7 +84,7 @@ mod glyf;
 
 pub mod error;
 
-use raw::tables::glyf::OffCurveFirstMode;
+use raw::tables::glyf::ToPathStyle;
 use read_fonts::{types::GlyphId, TableProvider};
 
 pub use embedded_hinting::{EmbeddedHintingInstance, HintingMode, LcdLayout};
@@ -152,7 +152,7 @@ pub struct AdjustedMetrics {
 pub struct DrawSettings<'a> {
     instance: DrawInstance<'a>,
     memory: Option<&'a mut [u8]>,
-    off_curve_first_mode: OffCurveFirstMode,
+    off_curve_first_mode: ToPathStyle,
 }
 
 impl<'a> DrawSettings<'a> {
@@ -162,7 +162,7 @@ impl<'a> DrawSettings<'a> {
         Self {
             instance: DrawInstance::Unhinted(size, location.into()),
             memory: None,
-            off_curve_first_mode: OffCurveFirstMode::default(),
+            off_curve_first_mode: ToPathStyle::default(),
         }
     }
 
@@ -174,7 +174,7 @@ impl<'a> DrawSettings<'a> {
         Self {
             instance: DrawInstance::EmbeddedHinted(instance),
             memory: None,
-            off_curve_first_mode: OffCurveFirstMode::default(),
+            off_curve_first_mode: ToPathStyle::default(),
         }
     }
 
@@ -190,7 +190,7 @@ impl<'a> DrawSettings<'a> {
         self
     }
 
-    pub fn with_offcurve_first_mode(mut self, off_curve_first_mode: OffCurveFirstMode) -> Self {
+    pub fn with_offcurve_first_mode(mut self, off_curve_first_mode: ToPathStyle) -> Self {
         self.off_curve_first_mode = off_curve_first_mode;
         self
     }
@@ -321,7 +321,7 @@ impl<'a> OutlineGlyph<'a> {
         size: Size,
         location: impl Into<LocationRef<'a>>,
         memory: Option<&mut [u8]>,
-        off_curve_first_mode: OffCurveFirstMode,
+        off_curve_first_mode: ToPathStyle,
         pen: &mut impl OutlinePen,
     ) -> Result<AdjustedMetrics, DrawError> {
         let ppem = size.ppem();
@@ -685,7 +685,7 @@ mod tests {
         expected_points.push(front);
 
         let settings: DrawSettings = Size::unscaled().into();
-        let settings = settings.with_offcurve_first_mode(OffCurveFirstMode::Front);
+        let settings = settings.with_offcurve_first_mode(ToPathStyle::HbDraw);
         assert_eq!(expected_points, draw_starting_off_curve(settings));
     }
 }
