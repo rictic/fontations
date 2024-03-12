@@ -588,6 +588,23 @@ mod tests {
         Off { x: f32, y: f32 },
     }
 
+    impl GlyphPoint {
+        fn implied_oncurve(&self, other: Self) -> Self {
+            let (x1, y1) = self.xy();
+            let (x2, y2) = other.xy();
+            Self::On {
+                x: (x1 + x2) / 2.0,
+                y: (y1 + y2) / 2.0,
+            }
+        }
+
+        fn xy(&self) -> (f32, f32) {
+            match self {
+                GlyphPoint::On { x, y } | GlyphPoint::Off { x, y } => (*x, *y),
+            }
+        }
+    }
+
     #[derive(Debug)]
     struct PointCaptor {
         points: Vec<GlyphPoint>,
@@ -642,8 +659,16 @@ mod tests {
         GlyphPoint::On { x: 998.0, y: 710.0 },
     ];
 
-    fn draw_starting_off_curve(settings: DrawSettings) -> Vec<GlyphPoint> {
-        let font = FontRef::new(font_test_data::STARTING_OFF_CURVE).unwrap();
+    const MOSTLY_OFF_CURVE_POINTS: [GlyphPoint; 5] = [
+        GlyphPoint::Off { x: 278.0, y: 710.0 },
+        GlyphPoint::Off { x: 278.0, y: 470.0 },
+        GlyphPoint::On { x: 998.0, y: 470.0 },
+        GlyphPoint::Off { x: 998.0, y: 710.0 },
+        GlyphPoint::Off { x: 750.0, y: 500.0 },
+    ];
+
+    fn drawn_points(font: &[u8], settings: DrawSettings) -> Vec<GlyphPoint> {
+        let font = FontRef::new(font).unwrap();
 
         // the period starts off-curve
         let gid = font
@@ -664,28 +689,102 @@ mod tests {
         pen.into_points()
     }
 
+    fn insert_implicit_oncurve(pointstream: &[GlyphPoint]) -> Vec<GlyphPoint> {
+        let mut expanded_points = Vec::new();
+
+        for i in 0..pointstream.len() - 1 {
+            expanded_points.push(pointstream[i]);
+            if matches!(
+                (pointstream[i], pointstream[i + 1]),
+                (GlyphPoint::Off { .. }, GlyphPoint::Off { .. })
+            ) {
+                expanded_points.push(pointstream[i].implied_oncurve(pointstream[i + 1]));
+            }
+        }
+
+        expanded_points.push(*pointstream.last().unwrap());
+
+        expanded_points
+    }
+
+    fn assert_walked_backwards_like_freetype(pointstream: &[GlyphPoint], font: &[u8]) {
+        assert!(
+            matches!(pointstream[0], GlyphPoint::Off { .. }),
+            "Bad testdata, should start off curve"
+        );
+
+        // The default: look for an oncurve at the back, as freetype would do
+        let mut expected_points = pointstream.to_vec();
+        let last = *expected_points.last().unwrap();
+        let first_move = if matches!(last, GlyphPoint::Off { .. }) {
+            expected_points[0].implied_oncurve(last)
+        } else {
+            expected_points.pop().unwrap()
+        };
+        expected_points.insert(0, first_move);
+
+        expected_points = insert_implicit_oncurve(&expected_points);
+        let actual = drawn_points(font, Size::unscaled().into());
+        assert_eq!(
+            expected_points, actual,
+            "expected\n{expected_points:#?}\nactual\n{actual:#?}"
+        );
+    }
+
+    fn assert_walked_forwards_like_harfbuzz(pointstream: &[GlyphPoint], font: &[u8]) {
+        assert!(
+            matches!(pointstream[0], GlyphPoint::Off { .. }),
+            "Bad testdata, should start off curve"
+        );
+
+        // look for an oncurve at the front, as harfbuzz would do
+        let mut expected_points = pointstream.to_vec();
+        let first = expected_points.remove(0);
+        expected_points.push(first);
+        if matches!(expected_points[0], GlyphPoint::Off { .. }) {
+            expected_points.insert(0, first.implied_oncurve(expected_points[0]))
+        };
+
+        expected_points = insert_implicit_oncurve(&expected_points);
+
+        let settings: DrawSettings = Size::unscaled().into();
+        let settings = settings.with_offcurve_first_mode(ToPathStyle::HbDraw);
+        let actual = drawn_points(font, settings);
+        assert_eq!(
+            expected_points, actual,
+            "expected\n{expected_points:#?}\nactual\n{actual:#?}"
+        );
+    }
+
     #[test]
     fn starting_off_curve_walk_backwards_like_freetype() {
-        // The default: find an oncurve at the back, as freetype would do
-        let mut expected_points = STARTING_OFF_CURVE_POINTS.to_vec();
-        let last = expected_points.pop().unwrap();
-        expected_points.insert(0, last);
+        assert_walked_backwards_like_freetype(
+            &STARTING_OFF_CURVE_POINTS,
+            font_test_data::STARTING_OFF_CURVE,
+        );
+    }
 
-        assert_eq!(
-            expected_points,
-            draw_starting_off_curve(Size::unscaled().into())
+    #[test]
+    fn mostly_off_curve_walk_backwards_like_freetype() {
+        assert_walked_backwards_like_freetype(
+            &MOSTLY_OFF_CURVE_POINTS,
+            font_test_data::MOSTLY_OFF_CURVE,
         );
     }
 
     #[test]
     fn starting_off_curve_walk_forwards_like_hbdraw() {
-        // The default: find an oncurve at the back, as freetype would do
-        let mut expected_points = STARTING_OFF_CURVE_POINTS.to_vec();
-        let front = expected_points.remove(0);
-        expected_points.push(front);
+        assert_walked_forwards_like_harfbuzz(
+            &STARTING_OFF_CURVE_POINTS,
+            font_test_data::STARTING_OFF_CURVE,
+        );
+    }
 
-        let settings: DrawSettings = Size::unscaled().into();
-        let settings = settings.with_offcurve_first_mode(ToPathStyle::HbDraw);
-        assert_eq!(expected_points, draw_starting_off_curve(settings));
+    #[test]
+    fn mostly_off_curve_walk_forwards_like_hbdraw() {
+        assert_walked_forwards_like_harfbuzz(
+            &MOSTLY_OFF_CURVE_POINTS,
+            font_test_data::MOSTLY_OFF_CURVE,
+        );
     }
 }
