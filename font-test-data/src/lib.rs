@@ -51,6 +51,8 @@ pub static STARTING_OFF_CURVE: &[u8] = include_bytes!("../test_data/ttf/starts_o
 
 pub static MOSTLY_OFF_CURVE: &[u8] = include_bytes!("../test_data/ttf/mostly_off_curve.ttf");
 
+pub static INTERPOLATE_THIS: &[u8] = include_bytes!("../test_data/ttf/interpolate_this.ttf");
+
 pub mod closure {
     pub static SIMPLE: &[u8] = include_bytes!("../test_data/ttf/simple_closure.ttf");
     pub static SIMPLE_GLYPHS: &str = include_str!("../test_data/fea/simple_closure_glyphs.txt");

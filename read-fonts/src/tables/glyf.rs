@@ -1260,16 +1260,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn to_path_drops_nop_lineto() {}
-
-    #[test]
-    fn to_path_empty() {}
-
-    #[test]
-    fn to_path_one_point() {}
-
-    #[test]
-    fn to_path_two_points() {}
 }

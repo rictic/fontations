@@ -486,6 +486,9 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
+    const PERIOD: u32 = 0x2E_u32;
+    const COMMA: u32 = 0x2C_u32;
+
     #[test]
     fn outline_glyph_formats() {
         let font_format_pairs = [
@@ -606,28 +609,21 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct PointCaptor {
+    struct PointPen {
         points: Vec<GlyphPoint>,
     }
 
-    impl PointCaptor {
+    impl PointPen {
         fn new() -> Self {
             Self { points: Vec::new() }
         }
 
-        fn into_points(mut self) -> Vec<GlyphPoint> {
-            // if we start and end with the same on-curve we can drop the end
-            if self.points.len() > 1
-                && matches!(self.points.first(), Some(GlyphPoint::On { .. }))
-                && self.points.first() == self.points.last()
-            {
-                self.points.pop();
-            }
+        fn into_points(self) -> Vec<GlyphPoint> {
             self.points
         }
     }
 
-    impl OutlinePen for PointCaptor {
+    impl OutlinePen for PointPen {
         fn move_to(&mut self, x: f32, y: f32) {
             self.points.push(GlyphPoint::On { x, y });
         }
@@ -648,7 +644,23 @@ mod tests {
         }
 
         fn close(&mut self) {
-            // nop, it's implied
+            // We can't drop a 0-length closing line for fear of breaking interpolation compatibility
+            //     - some other instance might have it not 0-length
+            // However, if the last command isn't a line and ends at the subpath start we can drop the endpoint
+            //     - if any instance had it other than at the start there would be a closing line
+            //     - and it wouldn't be interpolation compatible
+            // See <https://github.com/googlefonts/fontations/pull/818/files#r1521188624>
+            let np = self.points.len();
+            // We need at least 3 points to satisfy subsequent conditions
+            if np > 2
+                && self.points[0] == self.points[np - 1]
+                && matches!(
+                    (self.points[0], self.points[np - 2]),
+                    (GlyphPoint::On { .. }, GlyphPoint::Off { .. })
+                )
+            {
+                self.points.pop();
+            }
         }
     }
 
@@ -667,15 +679,43 @@ mod tests {
         GlyphPoint::Off { x: 750.0, y: 500.0 },
     ];
 
-    fn drawn_points(font: &[u8], settings: DrawSettings) -> Vec<GlyphPoint> {
-        let font = FontRef::new(font).unwrap();
+    /// Captures the svg drawing command sequence, e.g. MLLZ.
+    ///
+    /// Intended use is to confirm the command sequence pushed to the pen is interpolation compatible.
+    #[derive(Default, Debug)]
+    struct CommandPen {
+        commands: String,
+    }
 
-        // the period starts off-curve
+    impl OutlinePen for CommandPen {
+        fn move_to(&mut self, _x: f32, _y: f32) {
+            self.commands.push('M');
+        }
+
+        fn line_to(&mut self, _x: f32, _y: f32) {
+            self.commands.push('L');
+        }
+
+        fn quad_to(&mut self, _cx0: f32, _cy0: f32, _x: f32, _y: f32) {
+            self.commands.push('Q');
+        }
+
+        fn curve_to(&mut self, _cx0: f32, _cy0: f32, _cx1: f32, _cy1: f32, _x: f32, _y: f32) {
+            self.commands.push('C');
+        }
+
+        fn close(&mut self) {
+            self.commands.push('Z');
+        }
+    }
+
+    fn draw_to_pen(font: &[u8], codepoint: u32, settings: DrawSettings, pen: &mut impl OutlinePen) {
+        let font = FontRef::new(font).unwrap();
         let gid = font
             .cmap()
             .unwrap()
-            .map_codepoint(0x2E_u32)
-            .expect("No gid for period");
+            .map_codepoint(codepoint)
+            .unwrap_or_else(|| panic!("No gid for 0x{codepoint:04x}"));
         let outlines = font.outline_glyphs();
         let outline = outlines.get(gid).unwrap_or_else(|| {
             panic!(
@@ -684,8 +724,18 @@ mod tests {
             )
         });
 
-        let mut pen = PointCaptor::new();
-        outline.draw(settings, &mut pen).unwrap();
+        outline.draw(settings, pen).unwrap();
+    }
+
+    fn draw_commands(font: &[u8], codepoint: u32, settings: DrawSettings) -> String {
+        let mut pen = CommandPen::default();
+        draw_to_pen(font, codepoint, settings, &mut pen);
+        pen.commands
+    }
+
+    fn drawn_points(font: &[u8], codepoint: u32, settings: DrawSettings) -> Vec<GlyphPoint> {
+        let mut pen = PointPen::new();
+        draw_to_pen(font, codepoint, settings, &mut pen);
         pen.into_points()
     }
 
@@ -707,6 +757,67 @@ mod tests {
         expanded_points
     }
 
+    fn as_on_off_sequence(points: &[GlyphPoint]) -> Vec<&'static str> {
+        points
+            .iter()
+            .map(|p| match p {
+                GlyphPoint::On { .. } => "On",
+                GlyphPoint::Off { .. } => "Off",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn always_get_closing_lines() {
+        // <https://github.com/googlefonts/fontations/pull/818/files#r1521188624>
+        let period = draw_commands(
+            font_test_data::INTERPOLATE_THIS,
+            PERIOD,
+            Size::unscaled().into(),
+        );
+        let comma = draw_commands(
+            font_test_data::INTERPOLATE_THIS,
+            COMMA,
+            Size::unscaled().into(),
+        );
+
+        assert_eq!(
+            period, comma,
+            "Incompatible\nperiod\n{period:#?}\ncomma\n{comma:#?}\n"
+        );
+        assert_eq!(
+            "MLLLZ", period,
+            "We should get an explicit L for close even when it's a nop"
+        );
+    }
+
+    #[test]
+    fn triangle_and_square_retain_compatibility() {
+        // <https://github.com/googlefonts/fontations/pull/818/files#r1521188624>
+        let period = drawn_points(
+            font_test_data::INTERPOLATE_THIS,
+            PERIOD,
+            Size::unscaled().into(),
+        );
+        let comma = drawn_points(
+            font_test_data::INTERPOLATE_THIS,
+            COMMA,
+            Size::unscaled().into(),
+        );
+
+        assert_ne!(period, comma);
+        assert_eq!(
+            as_on_off_sequence(&period),
+            as_on_off_sequence(&comma),
+            "Incompatible\nperiod\n{period:#?}\ncomma\n{comma:#?}\n"
+        );
+        assert_eq!(
+            4,
+            period.len(),
+            "we should have the same # of points we started with"
+        );
+    }
+
     fn assert_walked_backwards_like_freetype(pointstream: &[GlyphPoint], font: &[u8]) {
         assert!(
             matches!(pointstream[0], GlyphPoint::Off { .. }),
@@ -724,7 +835,7 @@ mod tests {
         expected_points.insert(0, first_move);
 
         expected_points = insert_implicit_oncurve(&expected_points);
-        let actual = drawn_points(font, Size::unscaled().into());
+        let actual = drawn_points(font, PERIOD, Size::unscaled().into());
         assert_eq!(
             expected_points, actual,
             "expected\n{expected_points:#?}\nactual\n{actual:#?}"
@@ -749,7 +860,7 @@ mod tests {
 
         let settings: DrawSettings = Size::unscaled().into();
         let settings = settings.with_offcurve_first_mode(ToPathStyle::HbDraw);
-        let actual = drawn_points(font, settings);
+        let actual = drawn_points(font, PERIOD, settings);
         assert_eq!(
             expected_points, actual,
             "expected\n{expected_points:#?}\nactual\n{actual:#?}"
